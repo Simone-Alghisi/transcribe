@@ -1,12 +1,23 @@
-import os
 import argparse
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
 from argparse import Namespace
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
 from groq import Groq
 from tqdm import tqdm
+
+
+def signal_handler(sig, frame):
+    shutil.rmtree(args.tmp_dir, ignore_errors=True)
+    sys.exit(0)
 
 
 def get_args() -> Namespace:
@@ -42,6 +53,14 @@ def get_args() -> Namespace:
         help="Path to the directory where the transcriptions will be saved.",
     )
     parser.add_argument(
+        "--tmp-dir",
+        "-tmp",
+        metavar="TMP_DIR_PATH",
+        type=str,
+        default="tmp",
+        help="Path to the directory where the temporary files will be saved.",
+    )
+    parser.add_argument(
         "--model",
         "-m",
         metavar="MODEL_NAME",
@@ -64,12 +83,37 @@ def get_args() -> Namespace:
     return args
 
 
-def main(args: Namespace, client: Groq) -> None:
-    # Specify the path to the audio file
-    filename = (
-        os.path.dirname(__file__) + "/input/sample_audio.mp4"
-    )  # Replace with your audio file!
+def transcribe_audio_file(tmp_file: str, args: Namespace, client: Groq) -> str:
+    with open(str(tmp_file), "rb") as file:
+        try:
+            transcription = client.audio.transcriptions.create(
+                file=(tmp_file, file.read()),  # Required audio file
+                model=args.model,  # Required model to use for transcription
+                language=args.language,  # Optional
+            )
+        except Exception as e:
+            if e.status_code == 429:  # type: ignore
+                wait_time = e.message.split("try again in ")[-1].split(". Visit")[0]  # type: ignore
+                minutes, seconds = wait_time.split(".")
+                seconds = seconds if len(seconds) < 7 else seconds[:6] + "s"
+                wait_time = f"{minutes}.{seconds}"
+                wait_time = datetime.strptime(wait_time, "%Mm%S.%fs")
+                wait_time = wait_time.minute * 60 + wait_time.second + 2
+                for _ in tqdm(range(wait_time), desc="Waiting"):
+                    time.sleep(1)
 
+                return transcribe_audio_file(tmp_file, args, client)
+            else:
+                print(e.status_code)  # type: ignore
+                print(e.message)  # type: ignore
+
+    return transcription.text
+
+
+def main(args: Namespace, client: Groq) -> None:
+    # create directories if they don't exist
+    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.tmp_dir, exist_ok=True)
     audio_files: List[Path] = [
         audio_file
         for file_type in ["mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"]
@@ -77,17 +121,45 @@ def main(args: Namespace, client: Groq) -> None:
     ]
 
     for audio_file in tqdm(audio_files, desc="Transcribing audio files"):
-        # Open the audio file
-        with open(str(audio_file), "rb") as file:
+        filename = audio_file.stem
+        output_file = Path(args.output_dir) / f"{filename}.txt"
+
+        if output_file.exists():
+            print(f"Skipping {audio_file} as it has already been transcribed.")
+            continue
+
+        tmp_file = os.path.join(args.tmp_dir, f"{audio_file.stem}.mp3")
+        # Convert the file using ffmpeg
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-i",
+                audio_file,
+                "-vn",  # disable video
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                tmp_file,
+            ]
+        )
+
+        # Transcribe the converted file
+        with open(tmp_file, "rb") as file:
+
             # Create a transcription of the audio file
-            transcription = client.audio.transcriptions.create(
-                file=(filename, file.read()),  # Required audio file
-                model=args.model,  # Required model to use for transcription
-                language=args.language,  # Optional
-            )
+            transcription = transcribe_audio_file(tmp_file, args, client)
+
             # Print the transcription text
-            with open("transcription.txt", "w") as f:
-                f.write(transcription.text)
+            with open(output_file, "w") as f:
+                f.write(transcription)
+
+    # Remove the temporary file
+    shutil.rmtree(args.tmp_dir)
+
+
+# Remove tmp folder on SIGINT
+signal.signal(signal.SIGINT, signal_handler)
 
 
 if __name__ == "__main__":
