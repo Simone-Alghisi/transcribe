@@ -128,21 +128,28 @@ def main(args: Namespace, client: Groq) -> None:
             print(f"Skipping {audio_file} as it has already been transcribed.")
             continue
 
-        tmp_file = os.path.join(args.tmp_dir, f"{audio_file.stem}.mp3")
-        # Convert the file using ffmpeg
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-i",
-                audio_file,
-                "-vn",  # disable video
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                tmp_file,
-            ]
-        )
+        if shutil.which("ffmpeg"):
+            tmp_file = os.path.join(args.tmp_dir, f"{audio_file.stem}.mp3")
+            # Convert the file using ffmpeg
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-i",
+                    audio_file,
+                    "-vn",  # disable video
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    tmp_file,
+                ]
+            )
+        else:
+            print(
+                "FFmpeg not found. Please install FFmpeg to transcribe longer audio files."
+            )
+            print("Transcribing using the original audio file.")
+            tmp_file = str(audio_file)
 
         # Transcribe the converted file
         with open(tmp_file, "rb") as file:
