@@ -82,6 +82,8 @@ After completing the installation, you can activate the environment (example pro
 python -m asr
 ```
 
+The program will transcribe each file in the [`input`](./input) folder and place its transcription into the [`output`](./output) folder. Files that have already been transcribed will not be transcribed again.
+
 You can take a look at the full list of arguments by adding `--help` to the previous command.
 
 ## License
